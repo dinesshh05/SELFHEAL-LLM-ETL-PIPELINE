@@ -1,0 +1,12 @@
+John Doe
+Email: john.doe@example.com
+Phone: +91 9876543210
+
+Skills:
+Python, SQL, Machine Learning, Pandas
+
+Education:
+B.Tech in Computer Science, ABC Institute, 2023
+
+Experience:
+Data Analyst Intern at XYZ Pvt Ltd, 1.5 years

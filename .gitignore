@@ -1,0 +1,22 @@
+# Virtual environment
+penv/
+
+# Secrets / environment variables
+.env
+.env.*
+
+# Local database
+pipeline.db
+*.db
+*.sqlite3
+
+# Python cache
+__pycache__/
+*.pyc
+
+# VS Code (optional)
+.vscode/
+
+# Misc
+.DS_Store
+Thumbs.db

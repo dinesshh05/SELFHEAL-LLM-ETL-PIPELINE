@@ -1,0 +1,44 @@
+DINNer
+Phone no.:-+91 812gshy54cls | dinesshh09gmail.com
+linkedin.com/in/dinhneghh | Coimbatore, TamilNadu
+PROFILE
+Machine Learning and Deep Learning student with strong skills in data preprocessing, feature engineering, model development,
+and evaluation. Experienced with Python, Scikit-learn, TensorFlow, PyTorch, NLP, and computer vision. Interested in applied
+AI and research-oriented work.
+EDUCATION
+• Manipal University Jaipur
+Bachelor of Technology (CSE-AIML), Jaipur, Rajasthan
+PROJECTS
+2023–2027
+• Project A: Customer Churn Prediction | Machine Learning, Flask Deployment
+2024
+Tools: Python, Scikit-learn, Imbalanced-learn, Flask, HTML/CSS– Built anMLpipeline using 7,000+ telecom records with feature engineering, scaling, and SMOTENC to handle imbalance.– Trained Decision Tree, Random Forest, and XGBoost models (best ROC-AUC: 0.84) and used SHAP for explainability.– Deployed the final model via a Flask-based web app for real-time churn prediction.
+• Project B: Spam Email Classification | NLP, Machine Learning, Flask Deployment
+Tools: Python, Scikit-learn, NLTK, Flask– Processed 5,500+ SMS/email messages with custom text preprocessing and TF-IDF vectorization.– Benchmarked multiple ML models and achieved 98% accuracy using Linear SVM with cross-validation.– Packaged model and preprocessing pipeline into a Flask API for real-time spam detection.
+• Project C: CIFAR-10 Image Classification | Deep Learning, Computer Vision
+2024
+2024
+Tools: Python, PyTorch / TensorFlow, CNN, Data Augmentation, Matplotlib– Built and implemented a custom CNN with batch normalization, dropout, and data augmentation techniques.– Achieved 90% accuracy on 10-class CIFAR-10 dataset and evaluated performance using confusion matrix and learning
+curves.
+• Project D: Face Mask Detection | Deep Learning, Computer Vision
+Tools: Python, TensorFlow/Keras, OpenCV, CNN, Data Augmentation– Optimized a CNN with extensive data augmentation to classify masked vs. unmasked faces with 95% accuracy.– Integrated the model with OpenCV for real-time webcam detection with bounding box overlays.
+SKILLS
+2024
+• Programming Languages: Python, C, C++
+• ML/DLFrameworks: Scikit-learn, TensorFlow, PyTorch, OpenCV
+• Database: SQL
+• Statistics: Descriptive Statistics, Correlation Analysis, Basic Hypothesis Testing
+• Web Technologies: HTML, CSS, Flask
+• Tools: Git, Jupyter, VS Code
+• Soft Skills: Problem-Solving, Collaboration, Communication
+CERTIFICATIONS
+• Microsoft Azure AI Fundamentals (NLP)
+• Microsoft Azure AI Fundamentals (Computer Vision)
+• Microsoft Azure AI Fundamentals (Generative AI)
+• SQL for Data Analysis
+• British Airways Data Science Job Simulation on Forage
+2025
+2025
+2025
+2024
+2024
