@@ -102,12 +102,14 @@ class PipelineContext(BaseModel):
     # Source
     source_file:    str
     document_type:  DocumentType = DocumentType.UNKNOWN
+    source_hash:    Optional[str] = None
     raw_text:       Optional[str] = None
 
     # LLM interaction
     raw_llm_response:   Optional[str]  = None
     parsed_data:        Optional[dict] = None
     validated_data:     Optional[CandidateData] = None
+    llm_mode:           str = "auto"
 
     # Self-healing state
     retry_count:        int = 0
@@ -117,6 +119,7 @@ class PipelineContext(BaseModel):
     # Routing & output
     status:     ProcessingStatus = ProcessingStatus.FAILED
     db_record_id: Optional[int] = None
+    processing_ms: Optional[int] = None
     created_at:   datetime = Field(default_factory=datetime.utcnow)
 
     model_config = {"arbitrary_types_allowed": True}

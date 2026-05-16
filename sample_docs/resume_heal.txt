@@ -1,0 +1,10 @@
+Aanya Sharma
+Data Analyst Intern
+
+Email: aanya.sharma@example.com
+Phone: +91-9876543210
+Skills: Python, SQL, Pandas, FastAPI, Excel
+Education: B.Tech in Computer Science, Demo University, 2024
+Experience: Demo Labs, Data Intern, 0.6 years
+
+Demo marker: HEAL_ME

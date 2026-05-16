@@ -1,26 +1,20 @@
 """
 pipeline.py
-────────────
-Main orchestrator — connects all 9 layers in sequence.
-
-Usage:
-    python pipeline.py path/to/resume.pdf
-    python pipeline.py path/to/resume.txt
-    python pipeline.py --report          (show full DB report)
+Main orchestrator for the 9-layer self-healing pipeline.
 """
 
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
 from rich.console import Console
-from rich.rule import Rule
 
-load_dotenv()  # load .env before anything else
+load_dotenv()
 
-from layers import (
+from layers import (  # noqa: E402
     layer1_ingestion,
     layer2_text_extraction,
     layer3_llm_extraction,
@@ -31,91 +25,96 @@ from layers import (
     layer8_storage,
     layer9_monitoring,
 )
-from models.schemas import ProcessingStatus
+from models.schemas import PipelineContext, ProcessingStatus  # noqa: E402
 
 console = Console()
 
 LAYER_NAMES = [
-    "1 · Ingestion",
-    "2 · Text Extraction",
-    "3 · LLM Extraction",
-    "4 · Structured Parsing",
-    "5 · Validation",
-    "6 · Self-Healing",
-    "7 · Confidence Routing",
-    "8 · Storage",
-    "9 · Monitoring",
+    "1 | Ingestion",
+    "2 | Text Extraction",
+    "3 | LLM Extraction",
+    "4 | Structured Parsing",
+    "5 | Validation",
+    "6 | Self-Healing",
+    "7 | Confidence Routing",
+    "8 | Storage",
+    "9 | Monitoring",
 ]
 
 
-def run_pipeline(file_path: str) -> ProcessingStatus:
+def _print_banner() -> None:
+    console.print("[bold cyan]Self-Healing Pipeline[/bold cyan]")
+    console.print("=" * 80)
+
+
+def _print_step(title: str) -> None:
+    console.print(f"[dim]{title}[/dim]")
+    console.print("-" * 80)
+
+
+def _persist_failure(ctx: PipelineContext, error_message: str, started_at: float) -> PipelineContext:
+    ctx.validation_errors = [error_message]
+    ctx.status = ProcessingStatus.FAILED
+    ctx.processing_ms = int((time.perf_counter() - started_at) * 1000)
+    ctx = layer7_confidence_routing.run(ctx)
+    ctx = layer8_storage.run(ctx)
+    ctx = layer9_monitoring.run(ctx)
+    return ctx
+
+
+def run_pipeline_context(file_path: str) -> PipelineContext:
     """
-    Run all 9 layers for a single document.
-    Returns the final ProcessingStatus.
+    Run all 9 layers for a single document and return the full context.
     """
-    console.print(Rule("[bold cyan]Self-Healing Pipeline[/bold cyan]"))
+    started_at = time.perf_counter()
+
+    _print_banner()
     console.print(f"[dim]Input: {file_path}[/dim]\n")
 
-    # ── Layer 1: Ingestion ───────────────────
-    console.print(Rule(LAYER_NAMES[0], style="dim"))
+    _print_step(LAYER_NAMES[0])
     ctx = layer1_ingestion.run(file_path)
 
-    # ── Layer 2: Text Extraction ─────────────
-    console.print(Rule(LAYER_NAMES[1], style="dim"))
+    _print_step(LAYER_NAMES[1])
     ctx = layer2_text_extraction.run(ctx)
 
-    # ── Layer 3: LLM Extraction ──────────────
-    console.print(Rule(LAYER_NAMES[2], style="dim"))
+    _print_step(LAYER_NAMES[2])
     try:
         ctx = layer3_llm_extraction.run(ctx)
     except Exception as exc:
         console.print(f"[red]LLM extraction failed: {exc}[/red]")
-        ctx.validation_errors = [str(exc)]
-        ctx = layer7_confidence_routing.run(ctx)
-        ctx = layer8_storage.run(ctx)
-        ctx = layer9_monitoring.run(ctx)
-        return ctx.status
+        return _persist_failure(ctx, str(exc), started_at)
 
-    # ── Layer 4: Structured Parsing ──────────
-    console.print(Rule(LAYER_NAMES[3], style="dim"))
+    _print_step(LAYER_NAMES[3])
     try:
         ctx = layer4_structured_parsing.run(ctx)
     except ValueError as exc:
         console.print(f"[red]Parsing hard-failed: {exc}[/red]")
-        ctx.validation_errors = [str(exc)]
-        # Skip to storage so we record the failure
-        ctx = layer7_confidence_routing.run(ctx)
-        ctx = layer8_storage.run(ctx)
-        ctx = layer9_monitoring.run(ctx)
-        return ctx.status
+        return _persist_failure(ctx, str(exc), started_at)
 
-    # ── Layer 5: Validation ──────────────────
-    console.print(Rule(LAYER_NAMES[4], style="dim"))
+    _print_step(LAYER_NAMES[4])
     ctx = layer5_validation.run(ctx)
 
-    # ── Layer 6: Self-Healing ────────────────
-    console.print(Rule(LAYER_NAMES[5], style="dim"))
+    _print_step(LAYER_NAMES[5])
     ctx = layer6_self_healing.run(ctx)
 
-    # ── Layer 7: Confidence Routing ──────────
-    console.print(Rule(LAYER_NAMES[6], style="dim"))
+    _print_step(LAYER_NAMES[6])
     ctx = layer7_confidence_routing.run(ctx)
 
-    # ── Layer 8: Storage ─────────────────────
-    console.print(Rule(LAYER_NAMES[7], style="dim"))
+    ctx.processing_ms = int((time.perf_counter() - started_at) * 1000)
+
+    _print_step(LAYER_NAMES[7])
     ctx = layer8_storage.run(ctx)
 
-    # ── Layer 9: Monitoring ──────────────────
-    console.print(Rule(LAYER_NAMES[8], style="dim"))
+    _print_step(LAYER_NAMES[8])
     ctx = layer9_monitoring.run(ctx)
 
-    console.print(Rule(style="dim"))
-    return ctx.status
+    console.print("=" * 80)
+    return ctx
 
 
-# ─────────────────────────────────────────────
-# CLI entry point
-# ─────────────────────────────────────────────
+def run_pipeline(file_path: str) -> ProcessingStatus:
+    return run_pipeline_context(file_path).status
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -134,8 +133,4 @@ if __name__ == "__main__":
         sys.exit(1)
 
     status = run_pipeline(input_file)
-
-    exit_code = 0 if status == ProcessingStatus.PROCESSED else (
-        1 if status == ProcessingStatus.FAILED else 0
-    )
-    sys.exit(exit_code)
+    sys.exit(0 if status != ProcessingStatus.FAILED else 1)

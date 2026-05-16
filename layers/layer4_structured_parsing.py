@@ -46,14 +46,14 @@ def run(ctx: PipelineContext) -> PipelineContext:
     """
     Layer 4 entry point.
 
-    Parses ctx.raw_llm_response → ctx.parsed_data (dict).
+    Parses ctx.raw_llm_response -> ctx.parsed_data (dict).
     Raises ValueError if JSON cannot be recovered.
     """
-    log_layer("STRUCTURED PARSING", "Parsing LLM response into dict…")
+    log_layer("STRUCTURED PARSING", "Parsing LLM response into dict...")
 
     if not ctx.raw_llm_response:
         log_error("No LLM response to parse")
-        raise ValueError("ctx.raw_llm_response is empty — Layer 3 must run first")
+        raise ValueError("ctx.raw_llm_response is empty - Layer 3 must run first")
 
     try:
         cleaned = _clean_llm_output(ctx.raw_llm_response)

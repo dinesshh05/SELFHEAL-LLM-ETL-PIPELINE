@@ -21,23 +21,23 @@ console = Console(theme=_theme)
 
 
 def log_layer(layer_name: str, message: str) -> None:
-    console.print(f"[layer]▶ [{layer_name}][/layer]  {message}")
+    console.print(f"[layer]> [{layer_name}][/layer]  {message}")
 
 
 def log_success(message: str) -> None:
-    console.print(f"[success]✔  {message}[/success]")
+    console.print(f"[success]OK  {message}[/success]")
 
 
 def log_warning(message: str) -> None:
-    console.print(f"[warning]⚠  {message}[/warning]")
+    console.print(f"[warning]WARN  {message}[/warning]")
 
 
 def log_error(message: str) -> None:
-    console.print(f"[error]✘  {message}[/error]")
+    console.print(f"[error]ERR  {message}[/error]")
 
 
 def log_heal(message: str) -> None:
-    console.print(f"[heal]🔧 SELF-HEAL │ {message}[/heal]")
+    console.print(f"[heal]HEAL | {message}[/heal]")
 
 
 def log_info(message: str) -> None:

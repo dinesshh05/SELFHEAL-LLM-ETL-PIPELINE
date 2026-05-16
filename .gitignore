@@ -9,6 +9,8 @@ penv/
 pipeline.db
 *.db
 *.sqlite3
+runtime_uploads/
+uploads/
 
 # Python cache
 __pycache__/

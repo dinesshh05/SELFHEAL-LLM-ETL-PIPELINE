@@ -32,7 +32,7 @@ def _extract_pdf(path: str) -> str:
     doc.close()
 
     if not pages:
-        raise ValueError("PDF contains no extractable text. May be image-only — use OCR.")
+        raise ValueError("PDF contains no extractable text. May be image-only; use OCR.")
 
     return "\n\n".join(pages)
 
@@ -57,7 +57,7 @@ def run(ctx: PipelineContext) -> PipelineContext:
     Reads ctx.source_file according to ctx.document_type,
     writes clean text into ctx.raw_text, and returns ctx.
     """
-    log_layer("TEXT EXTRACTION", f"Extracting from {ctx.document_type.value} → {ctx.source_file}")
+    log_layer("TEXT EXTRACTION", f"Extracting from {ctx.document_type.value} -> {ctx.source_file}")
 
     try:
         if ctx.document_type == DocumentType.TEXT:
@@ -74,7 +74,7 @@ def run(ctx: PipelineContext) -> PipelineContext:
 
         # ── Quality guard ────────────────────
         if len(raw_text.strip()) < 50:
-            log_warning("Extracted text is suspiciously short — may be low quality")
+            log_warning("Extracted text is suspiciously short - may be low quality")
 
         ctx.raw_text = raw_text.strip()
         log_success(f"Extracted {len(ctx.raw_text):,} characters of text")
