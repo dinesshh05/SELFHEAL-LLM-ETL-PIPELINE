@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import csv
+import io
+import json
 import os
 import shutil
 from pathlib import Path
@@ -7,8 +10,9 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
-from sqlalchemy import func
+from fastapi.responses import HTMLResponse, JSONResponse, Response
+from pydantic import BaseModel
+from sqlalchemy import func, or_
 from sqlalchemy.orm import sessionmaker
 
 from models.db_models import CandidateRecord, prepare_database
@@ -38,6 +42,9 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
     app.state.database_url = db_url
     app.state.uploads_path = uploads_path
     app.state.session_local = SessionLocal
+
+    class FolderProcessRequest(BaseModel):
+        folder_path: str
 
     def _session():
         return SessionLocal()
@@ -69,6 +76,88 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
             "phone": record.phone,
         }
 
+    def _filtered_query(
+        session,
+        *,
+        status: str | None = None,
+        q: str | None = None,
+        llm_mode: str | None = None,
+        min_confidence: float | None = None,
+        max_confidence: float | None = None,
+    ):
+        query = session.query(CandidateRecord)
+
+        if status:
+            query = query.filter(CandidateRecord.status == status)
+
+        if llm_mode:
+            query = query.filter(CandidateRecord.llm_mode == llm_mode)
+
+        if min_confidence is not None:
+            query = query.filter(CandidateRecord.confidence_score >= min_confidence)
+
+        if max_confidence is not None:
+            query = query.filter(CandidateRecord.confidence_score <= max_confidence)
+
+        if q:
+            pattern = f"%{q.strip()}%"
+            query = query.filter(
+                or_(
+                    CandidateRecord.name.ilike(pattern),
+                    CandidateRecord.email.ilike(pattern),
+                    CandidateRecord.source_file.ilike(pattern),
+                    CandidateRecord.document_type.ilike(pattern),
+                )
+            )
+
+        return query
+
+    def _serialize_export_row(record: CandidateRecord) -> dict:
+        row = _record_detail(record)
+        row["validation_errors"] = json.dumps(row["validation_errors"])
+        row["healing_log"] = json.dumps(row["healing_log"])
+        row["parsed_data"] = json.dumps(row["parsed_data"], ensure_ascii=False)
+        return row
+
+    def _save_upload(file: UploadFile, destination_dir: Path) -> Path:
+        source_name = Path(file.filename or "upload.txt").name
+        suffix = Path(source_name).suffix.lower() or ".txt"
+        destination = destination_dir / f"{uuid4().hex}{suffix}"
+        with destination.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        return destination
+
+    def _safe_llm_mode() -> str:
+        try:
+            return resolve_llm_mode()
+        except Exception as exc:
+            return f"error: {exc}"
+
+    def _run_document(file_path: Path) -> dict:
+        try:
+            ctx = run_pipeline_context(str(file_path))
+            return {
+                "record_id": ctx.db_record_id,
+                "status": ctx.status.value,
+                "llm_mode": ctx.llm_mode,
+                "processing_ms": ctx.processing_ms,
+                "source_file": ctx.source_file,
+                "source_hash": ctx.source_hash,
+                "validation_errors": ctx.validation_errors,
+                "healing_log": ctx.healing_log,
+            }
+        except Exception as exc:
+            return {
+                "record_id": None,
+                "status": "FAILED",
+                "llm_mode": _safe_llm_mode(),
+                "processing_ms": None,
+                "source_file": str(file_path),
+                "source_hash": None,
+                "validation_errors": [str(exc)],
+                "healing_log": [f"Pipeline error - {exc}"],
+            }
+
     def _dashboard_html() -> str:
         return """<!doctype html>
 <html lang="en">
@@ -78,18 +167,19 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
   <title>Self-Healing ETL Demo</title>
   <style>
     :root {
-      --bg: #0b1120;
-      --panel: rgba(15, 23, 42, 0.82);
-      --panel-2: rgba(30, 41, 59, 0.82);
-      --border: rgba(148, 163, 184, 0.18);
-      --text: #e2e8f0;
-      --muted: #94a3b8;
-      --accent: #14b8a6;
-      --accent-2: #f59e0b;
-      --good: #22c55e;
-      --warn: #f59e0b;
-      --bad: #ef4444;
-      --shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+      --bg: #f5efe6;
+      --bg-2: #eef2ee;
+      --panel: rgba(255, 250, 242, 0.88);
+      --panel-2: rgba(243, 237, 228, 0.95);
+      --border: rgba(55, 65, 81, 0.14);
+      --text: #1f2937;
+      --muted: #6b7280;
+      --accent: #1f6f5b;
+      --accent-2: #c46a2b;
+      --good: #1f8a5b;
+      --warn: #c47d1f;
+      --bad: #d14b4b;
+      --shadow: 0 22px 60px rgba(31, 41, 55, 0.12);
     }
     * { box-sizing: border-box; }
     body {
@@ -97,12 +187,46 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       color: var(--text);
       background:
-        radial-gradient(circle at top left, rgba(20, 184, 166, 0.22), transparent 28%),
-        radial-gradient(circle at top right, rgba(245, 158, 11, 0.18), transparent 22%),
-        linear-gradient(160deg, #020617, var(--bg) 45%, #111827);
+        radial-gradient(circle at 8% 12%, rgba(31, 111, 91, 0.12), transparent 18%),
+        radial-gradient(circle at 90% 10%, rgba(196, 106, 43, 0.14), transparent 20%),
+        radial-gradient(circle at 50% 100%, rgba(31, 111, 91, 0.09), transparent 24%),
+        linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
       min-height: 100vh;
+      position: relative;
+      overflow-x: hidden;
     }
-    .wrap { max-width: 1240px; margin: 0 auto; padding: 28px 18px 40px; }
+    body::before,
+    body::after {
+      content: "";
+      position: fixed;
+      inset: auto;
+      pointer-events: none;
+      border-radius: 999px;
+      filter: blur(18px);
+      opacity: 0.45;
+      z-index: 0;
+    }
+    body::before {
+      width: 240px;
+      height: 240px;
+      top: 48px;
+      right: -64px;
+      background: radial-gradient(circle, rgba(196, 106, 43, 0.22), rgba(196, 106, 43, 0));
+    }
+    body::after {
+      width: 300px;
+      height: 300px;
+      left: -88px;
+      bottom: -92px;
+      background: radial-gradient(circle, rgba(31, 111, 91, 0.2), rgba(31, 111, 91, 0));
+    }
+    .wrap {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 28px 18px 40px;
+      position: relative;
+      z-index: 1;
+    }
     .hero {
       display: grid;
       grid-template-columns: 1.3fr 0.8fr;
@@ -113,18 +237,49 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
     .brand, .stats, .panel {
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 20px;
+      border-radius: 24px;
       box-shadow: var(--shadow);
-      backdrop-filter: blur(10px);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
     }
-    .brand { padding: 28px; }
-    .brand h1 { margin: 0 0 10px; font-size: clamp(2rem, 5vw, 3.6rem); line-height: 1.02; }
-    .brand p { margin: 0; color: var(--muted); max-width: 60ch; font-size: 1rem; line-height: 1.65; }
+    .brand {
+      padding: 30px;
+      border-left: 6px solid var(--accent);
+      position: relative;
+      overflow: hidden;
+    }
+    .brand::after {
+      content: "";
+      position: absolute;
+      inset: auto -60px -88px auto;
+      width: 220px;
+      height: 220px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(31, 111, 91, 0.12), rgba(31, 111, 91, 0));
+      pointer-events: none;
+    }
+    .brand h1 {
+      margin: 0 0 14px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(2.2rem, 5vw, 4rem);
+      line-height: 0.98;
+      letter-spacing: -0.03em;
+      max-width: 12ch;
+    }
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      max-width: 62ch;
+      font-size: 1rem;
+      line-height: 1.72;
+    }
     .badge {
       display: inline-flex; align-items: center; gap: 8px;
       padding: 8px 12px; border-radius: 999px;
-      background: rgba(20, 184, 166, 0.14); color: #99f6e4;
-      border: 1px solid rgba(20, 184, 166, 0.25); margin-bottom: 16px;
+      background: rgba(31, 111, 91, 0.12);
+      color: var(--accent);
+      border: 1px solid rgba(31, 111, 91, 0.18);
+      margin-bottom: 16px;
       font-size: 0.85rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
     }
     .stats {
@@ -135,31 +290,66 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
     }
     .stat {
       padding: 18px;
-      border-radius: 16px;
-      background: var(--panel-2);
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(243, 237, 228, 0.96));
       border: 1px solid var(--border);
     }
-    .stat .label { color: var(--muted); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; }
-    .stat .value { margin-top: 8px; font-size: 1.8rem; font-weight: 800; }
+    .stat .label { color: var(--muted); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em; }
+    .stat .value { margin-top: 8px; font-size: 1.9rem; font-weight: 800; letter-spacing: -0.03em; }
     .grid {
       display: grid;
       grid-template-columns: 0.95fr 1.05fr;
       gap: 18px;
       align-items: start;
     }
-    .panel { padding: 20px; }
-    .panel h2 { margin: 0 0 14px; font-size: 1.15rem; }
+    .panel {
+      padding: 20px;
+      position: relative;
+      overflow: hidden;
+    }
+    .panel::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(31, 111, 91, 0.22), transparent);
+    }
+    .panel h2 {
+      margin: 0 0 14px;
+      font-size: 1.08rem;
+      letter-spacing: -0.02em;
+    }
     label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 0.9rem; }
     input[type="file"] {
       width: 100%;
       padding: 12px;
-      background: rgba(15, 23, 42, 0.9);
+      background: rgba(255, 255, 255, 0.82);
       color: var(--text);
       border: 1px solid var(--border);
       border-radius: 14px;
       margin-bottom: 10px;
     }
     .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .filters {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin: 14px 0 18px;
+      padding: 14px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.55);
+      border: 1px solid var(--border);
+    }
+    .filters .full { grid-column: 1 / -1; }
+    input[type="text"], input[type="number"], select {
+      width: 100%;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.88);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      outline: none;
+    }
     button {
       appearance: none;
       border: none;
@@ -167,15 +357,19 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
       padding: 12px 16px;
       cursor: pointer;
       font-weight: 800;
-      background: linear-gradient(135deg, var(--accent), #0f766e);
-      color: #02110f;
-      box-shadow: 0 10px 30px rgba(20, 184, 166, 0.22);
+      background: linear-gradient(135deg, var(--accent), #154d40);
+      color: #f8fafc;
+      box-shadow: 0 10px 24px rgba(31, 111, 91, 0.2);
     }
     button.secondary {
-      background: transparent;
+      background: rgba(255, 255, 255, 0.7);
       color: var(--text);
       border: 1px solid var(--border);
       box-shadow: none;
+    }
+    button:hover {
+      transform: translateY(-1px);
+      filter: saturate(1.05);
     }
     .hint { margin-top: 10px; color: var(--muted); font-size: 0.9rem; line-height: 1.55; }
     .table {
@@ -191,7 +385,7 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
       vertical-align: top;
       font-size: 0.92rem;
     }
-    .table th { color: var(--muted); font-weight: 700; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; }
+    .table th { color: var(--muted); font-weight: 700; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.1em; }
     .pill {
       display: inline-flex;
       padding: 6px 10px;
@@ -214,17 +408,17 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
       margin: 0;
       white-space: pre-wrap;
       word-break: break-word;
-      background: rgba(2, 6, 23, 0.88);
+      background: #f8f5ee;
       border: 1px solid var(--border);
       border-radius: 14px;
       padding: 14px;
       max-height: 320px;
       overflow: auto;
-      color: #dbeafe;
+      color: #1f2937;
     }
     .muted { color: var(--muted); }
     @media (max-width: 960px) {
-      .hero, .grid, .details { grid-template-columns: 1fr; }
+      .hero, .grid, .details, .filters { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -232,17 +426,17 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
   <div class="wrap">
     <div class="hero">
       <section class="brand">
-        <div class="badge">Self-Healing ETL Demo</div>
-        <h1>Resume parsing that can explain, repair, and store its own work.</h1>
+        <div class="badge">Portfolio Dashboard</div>
+        <h1>A resume pipeline with a clean audit trail.</h1>
         <p>
           Upload a resume, see the 9-layer pipeline run, inspect validation and repair attempts,
-          and review the structured candidate record in a clean dashboard.
+          and review the structured candidate record in a refined dashboard that feels ready to present.
         </p>
       </section>
       <aside class="stats" id="stats">
-        <div class="stat"><div class="label">Total</div><div class="value" id="total-count">0</div></div>
+        <div class="stat"><div class="label">Total runs</div><div class="value" id="total-count">0</div></div>
         <div class="stat"><div class="label">Processed</div><div class="value" id="processed-count">0</div></div>
-        <div class="stat"><div class="label">Pending</div><div class="value" id="pending-count">0</div></div>
+        <div class="stat"><div class="label">Pending review</div><div class="value" id="pending-count">0</div></div>
         <div class="stat"><div class="label">Failed</div><div class="value" id="failed-count">0</div></div>
       </aside>
     </div>
@@ -251,10 +445,11 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
       <section class="panel">
         <h2>Process a resume</h2>
         <form id="upload-form">
-          <label for="file">Choose a .txt or .pdf resume</label>
-          <input id="file" name="file" type="file" accept=".txt,.pdf,.md" required />
+          <label for="file">Choose one resume or a folder of resumes</label>
+          <input id="file" name="file" type="file" accept=".txt,.pdf,.md" multiple webkitdirectory directory required />
           <div class="row">
             <button type="submit">Run pipeline</button>
+            <button type="button" id="batch-btn">Run batch</button>
             <button type="button" class="secondary" id="reload-btn">Refresh data</button>
           </div>
         </form>
@@ -265,6 +460,44 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
 
       <section class="panel">
         <h2>Recent runs</h2>
+        <div class="filters">
+          <div class="full">
+            <label for="search-query">Search by name, email, file, or document type</label>
+            <input id="search-query" type="text" placeholder="Search records..." />
+          </div>
+          <div>
+            <label for="status-filter">Status</label>
+            <select id="status-filter">
+              <option value="">All statuses</option>
+              <option value="PROCESSED">Processed</option>
+              <option value="PENDING_REVIEW">Pending review</option>
+              <option value="FAILED">Failed</option>
+            </select>
+          </div>
+          <div>
+            <label for="mode-filter">LLM mode</label>
+            <select id="mode-filter">
+              <option value="">Any mode</option>
+              <option value="mock">Mock</option>
+              <option value="groq">Groq</option>
+              <option value="auto">Auto</option>
+            </select>
+          </div>
+          <div>
+            <label for="min-confidence">Min confidence</label>
+            <input id="min-confidence" type="number" step="0.01" min="0" max="1" placeholder="0.50" />
+          </div>
+          <div>
+            <label for="max-confidence">Max confidence</label>
+            <input id="max-confidence" type="number" step="0.01" min="0" max="1" placeholder="1.00" />
+          </div>
+          <div class="full row">
+            <button type="button" class="secondary" id="filter-btn">Apply filters</button>
+            <button type="button" class="secondary" id="reset-btn">Reset</button>
+            <button type="button" class="secondary" id="export-csv-btn">Export CSV</button>
+            <button type="button" class="secondary" id="export-json-btn">Export JSON</button>
+          </div>
+        </div>
         <table class="table">
           <thead>
             <tr>
@@ -294,6 +527,12 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
     const recordsBody = document.getElementById("records-body");
     const healingView = document.getElementById("healing-view");
     const outputView = document.getElementById("output-view");
+    const fileInput = document.getElementById("file");
+    const searchQuery = document.getElementById("search-query");
+    const statusFilter = document.getElementById("status-filter");
+    const modeFilter = document.getElementById("mode-filter");
+    const minConfidence = document.getElementById("min-confidence");
+    const maxConfidence = document.getElementById("max-confidence");
 
     function statusClass(status) {
       if (status === "PROCESSED") return "good";
@@ -305,6 +544,16 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
       return value === null || value === undefined || value === "" ? "—" : value;
     }
 
+    function collectFilters() {
+      const params = new URLSearchParams();
+      if (searchQuery.value.trim()) params.set("q", searchQuery.value.trim());
+      if (statusFilter.value) params.set("status", statusFilter.value);
+      if (modeFilter.value) params.set("llm_mode", modeFilter.value);
+      if (minConfidence.value) params.set("min_confidence", minConfidence.value);
+      if (maxConfidence.value) params.set("max_confidence", maxConfidence.value);
+      return params;
+    }
+
     async function loadStats() {
       const response = await fetch("/api/report");
       const data = await response.json();
@@ -314,8 +563,10 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
       document.getElementById("failed-count").textContent = data.failed;
     }
 
-    async function loadRecords() {
-      const response = await fetch("/api/records?limit=12");
+    async function loadRecords(filters = collectFilters()) {
+      const params = new URLSearchParams(filters);
+      params.set("limit", "12");
+      const response = await fetch(`/api/records?${params.toString()}`);
       const data = await response.json();
       recordsBody.innerHTML = "";
 
@@ -357,7 +608,6 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
 
     document.getElementById("upload-form").addEventListener("submit", async (event) => {
       event.preventDefault();
-      const fileInput = document.getElementById("file");
       if (!fileInput.files.length) return;
 
       const formData = new FormData();
@@ -374,13 +624,60 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
       statusMessage.textContent = `Saved record ${result.record_id} with status ${result.status}.`;
       await loadStats();
       await loadRecords();
-      await loadRecord(result.record_id);
+      if (result.record_id) {
+        await loadRecord(result.record_id);
+      }
+    });
+
+    document.getElementById("batch-btn").addEventListener("click", async () => {
+      if (!fileInput.files.length) return;
+
+      const formData = new FormData();
+      Array.from(fileInput.files).forEach((file) => formData.append("files", file));
+      statusMessage.textContent = "Running batch processing...";
+
+      const response = await fetch("/api/batch", { method: "POST", body: formData });
+      const result = await response.json();
+      if (!response.ok) {
+        statusMessage.textContent = `Batch failed: ${result.detail || "unknown error"}`;
+        return;
+      }
+
+      statusMessage.textContent = `Batch complete: ${result.summary.processed} processed, ${result.summary.pending} pending, ${result.summary.failed} failed.`;
+      await loadStats();
+      await loadRecords();
+      const firstRecord = result.items.find((item) => item.record_id);
+      if (firstRecord) {
+        await loadRecord(firstRecord.record_id);
+      }
     });
 
     document.getElementById("reload-btn").addEventListener("click", async () => {
       await loadStats();
       await loadRecords();
     });
+
+    document.getElementById("filter-btn").addEventListener("click", async () => {
+      await loadRecords();
+    });
+
+    document.getElementById("reset-btn").addEventListener("click", async () => {
+      searchQuery.value = "";
+      statusFilter.value = "";
+      modeFilter.value = "";
+      minConfidence.value = "";
+      maxConfidence.value = "";
+      await loadRecords();
+    });
+
+    function triggerExport(format) {
+      const params = collectFilters();
+      params.set("format", format);
+      window.location.href = `/api/export?${params.toString()}`;
+    }
+
+    document.getElementById("export-csv-btn").addEventListener("click", () => triggerExport("csv"));
+    document.getElementById("export-json-btn").addEventListener("click", () => triggerExport("json"));
 
     loadStats();
     loadRecords();
@@ -394,15 +691,11 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
 
     @app.get("/health")
     def health() -> dict:
-        try:
-            llm_mode = resolve_llm_mode()
-        except Exception as exc:
-            llm_mode = f"error: {exc}"
         return {
             "status": "ok",
             "database_url": db_url,
             "upload_dir": str(uploads_path),
-            "llm_mode": llm_mode,
+            "llm_mode": _safe_llm_mode(),
         }
 
     @app.post("/api/process")
@@ -410,48 +703,113 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
         if not file.filename:
             raise HTTPException(status_code=400, detail="Upload must include a filename")
 
-        source_name = Path(file.filename).name
-        suffix = Path(source_name).suffix.lower() or ".txt"
-        destination = uploads_path / f"{uuid4().hex}{suffix}"
-
-        with destination.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
         try:
-            ctx = run_pipeline_context(str(destination))
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            destination = _save_upload(file, uploads_path)
+            result = _run_document(destination)
         finally:
             await file.close()
 
+        return result
+
+    @app.post("/api/batch")
+    async def batch(files: list[UploadFile] = File(...)) -> dict:
+        if not files:
+            raise HTTPException(status_code=400, detail="At least one file is required")
+
+        items: list[dict] = []
+        for upload in files:
+            if not upload.filename:
+                items.append(
+                    {
+                        "record_id": None,
+                        "status": "FAILED",
+                        "source_file": None,
+                        "validation_errors": ["Missing filename"],
+                        "healing_log": [],
+                    }
+                )
+                continue
+
+            try:
+                destination = _save_upload(upload, uploads_path)
+                items.append(_run_document(destination))
+            finally:
+                await upload.close()
+
+        summary = {
+            "total": len(items),
+            "processed": sum(1 for item in items if item["status"] == "PROCESSED"),
+            "pending": sum(1 for item in items if item["status"] == "PENDING_REVIEW"),
+            "failed": sum(1 for item in items if item["status"] == "FAILED"),
+        }
+        return {"summary": summary, "items": items}
+
+    @app.post("/api/process-folder")
+    def process_folder(payload: FolderProcessRequest) -> dict:
+        folder = Path(payload.folder_path).expanduser().resolve()
+        if not folder.exists() or not folder.is_dir():
+            raise HTTPException(status_code=400, detail="folder_path must point to an existing directory")
+
+        from pipeline import run_pipeline_batch  # local import avoids cycles during app startup
+
+        contexts = run_pipeline_batch(str(folder))
+        items = [
+            {
+                "record_id": ctx.db_record_id,
+                "status": ctx.status.value,
+                "llm_mode": ctx.llm_mode,
+                "processing_ms": ctx.processing_ms,
+                "source_file": ctx.source_file,
+                "source_hash": ctx.source_hash,
+                "validation_errors": ctx.validation_errors,
+                "healing_log": ctx.healing_log,
+            }
+            for ctx in contexts
+        ]
+
         return {
-            "record_id": ctx.db_record_id,
-            "status": ctx.status.value,
-            "llm_mode": ctx.llm_mode,
-            "processing_ms": ctx.processing_ms,
-            "source_file": ctx.source_file,
-            "source_hash": ctx.source_hash,
-            "validation_errors": ctx.validation_errors,
-            "healing_log": ctx.healing_log,
+            "summary": {
+                "total": len(items),
+                "processed": sum(1 for item in items if item["status"] == "PROCESSED"),
+                "pending": sum(1 for item in items if item["status"] == "PENDING_REVIEW"),
+                "failed": sum(1 for item in items if item["status"] == "FAILED"),
+            },
+            "items": items,
         }
 
     @app.get("/api/records")
-    def records(limit: int = 20) -> dict:
+    def records(
+        limit: int = 20,
+        status: str | None = None,
+        q: str | None = None,
+        llm_mode: str | None = None,
+        min_confidence: float | None = None,
+        max_confidence: float | None = None,
+    ) -> dict:
         session = _session()
         try:
-            rows = session.query(CandidateRecord).order_by(CandidateRecord.id.desc()).limit(limit).all()
-            return {"items": [_record_summary(record) for record in rows]}
-        finally:
-            session.close()
-
-    @app.get("/api/records/{record_id}")
-    def record_detail(record_id: int) -> dict:
-        session = _session()
-        try:
-            record = session.get(CandidateRecord, record_id)
-            if not record:
-                raise HTTPException(status_code=404, detail="Record not found")
-            return _record_detail(record)
+            query = _filtered_query(
+                session,
+                status=status,
+                q=q,
+                llm_mode=llm_mode,
+                min_confidence=min_confidence,
+                max_confidence=max_confidence,
+            )
+            total = query.count()
+            rows = query.order_by(CandidateRecord.id.desc()).limit(limit).all()
+            return {
+                "items": [_record_summary(record) for record in rows],
+                "count": total,
+                "filters": {
+                    "limit": limit,
+                    "status": status,
+                    "q": q,
+                    "llm_mode": llm_mode,
+                    "min_confidence": min_confidence,
+                    "max_confidence": max_confidence,
+                },
+            }
         finally:
             session.close()
 
@@ -472,6 +830,93 @@ def create_app(database_url: str | None = None, upload_dir: str | None = None) -
                 "failed": failed,
                 "avg_runtime_ms": round(float(avg_runtime), 2),
             }
+        finally:
+            session.close()
+
+    @app.get("/api/export")
+    def export_records(
+        format: str = "csv",
+        status: str | None = None,
+        q: str | None = None,
+        llm_mode: str | None = None,
+        min_confidence: float | None = None,
+        max_confidence: float | None = None,
+    ):
+        session = _session()
+        try:
+            records = (
+                _filtered_query(
+                    session,
+                    status=status,
+                    q=q,
+                    llm_mode=llm_mode,
+                    min_confidence=min_confidence,
+                    max_confidence=max_confidence,
+                )
+                .order_by(CandidateRecord.id.desc())
+                .all()
+            )
+
+            if format.lower() == "json":
+                return JSONResponse(
+                    content={
+                        "items": [_record_detail(record) for record in records],
+                        "count": len(records),
+                    }
+                )
+
+            if format.lower() != "csv":
+                raise HTTPException(status_code=400, detail="format must be csv or json")
+
+            output = io.StringIO()
+            writer = csv.DictWriter(
+                output,
+                fieldnames=[
+                    "id",
+                    "name",
+                    "email",
+                    "status",
+                    "document_type",
+                    "llm_mode",
+                    "confidence_score",
+                    "retry_count",
+                    "processing_ms",
+                    "source_file",
+                    "source_hash",
+                    "created_at",
+                    "validation_errors",
+                    "healing_log",
+                    "parsed_data",
+                ],
+            )
+            writer.writeheader()
+            for record in records:
+                row = _serialize_export_row(record)
+                writer.writerow(
+                    {
+                        "id": row["id"],
+                        "name": row["name"],
+                        "email": row["email"],
+                        "status": row["status"],
+                        "document_type": row["document_type"],
+                        "llm_mode": row["llm_mode"],
+                        "confidence_score": row["confidence_score"],
+                        "retry_count": row["retry_count"],
+                        "processing_ms": row["processing_ms"],
+                        "source_file": row["source_file"],
+                        "source_hash": row["source_hash"],
+                        "created_at": row["created_at"],
+                        "validation_errors": row["validation_errors"],
+                        "healing_log": row["healing_log"],
+                        "parsed_data": row["parsed_data"],
+                    }
+                )
+
+            return Response(
+                content=output.getvalue(),
+                media_type="text/csv",
+                headers={"Content-Disposition": 'attachment; filename="records.csv"'},
+            )
         finally:
             session.close()
 
