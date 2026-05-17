@@ -14,11 +14,12 @@ The main idea is simple: if the LLM returns messy data, the pipeline does not st
 - SQLAlchemy persistence
 - FastAPI backend
 - Lightweight dashboard for demos
+- Batch processing, filtered search, and CSV/JSON export
 
 ## Architecture
 
 1. Ingestion checks the file, detects type, and hashes the source.
-2. Text extraction reads `.txt`, `.md`, or `.pdf` resumes.
+2. Text extraction reads `.txt`, `.md`, or `.pdf` resumes. PDF support includes a fallback parser, so simple text-based PDFs still work even if PyMuPDF is not installed.
 3. LLM extraction produces structured JSON.
 4. Structured parsing converts raw output into a Python dict.
 5. Validation checks the payload against a strict schema.
@@ -45,6 +46,12 @@ pip install -r requirements.txt
 3. Optional: add a Groq key if you want live extraction.
 
 If you do not add a key, the project will use mock mode automatically.
+
+To verify PDF support from the terminal:
+
+```bash
+python -m unittest tests.test_pdf_support -v
+```
 
 ## Run The CLI
 
@@ -79,10 +86,20 @@ Open:
 - `http://127.0.0.1:8000/` for the dashboard
 - `http://127.0.0.1:8000/docs` for the API docs
 
+The dashboard supports:
+
+- single resume upload
+- batch upload from a folder selection
+- searching by name, email, file, status, or mode
+- exporting the current filtered view as CSV or JSON
+
 ## API Endpoints
 
 - `POST /api/process` - upload a resume and run the full pipeline
+- `POST /api/batch` - upload multiple resumes at once
+- `POST /api/process-folder` - process a local folder on the server
 - `GET /api/records` - list recent runs
+- `GET /api/export` - export filtered data as CSV or JSON
 - `GET /api/records/{id}` - inspect one run in detail
 - `GET /api/report` - aggregate counts
 - `GET /health` - service health check
