@@ -41,6 +41,8 @@ LAYER_NAMES = [
     "9 | Monitoring",
 ]
 
+SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf"}
+
 
 def _print_banner() -> None:
     console.print("[bold cyan]Self-Healing Pipeline[/bold cyan]")
@@ -50,6 +52,15 @@ def _print_banner() -> None:
 def _print_step(title: str) -> None:
     console.print(f"[dim]{title}[/dim]")
     console.print("-" * 80)
+
+
+def _collect_supported_files(root: Path) -> list[Path]:
+    files = [
+        path
+        for path in root.rglob("*")
+        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+    ]
+    return sorted(files)
 
 
 def _persist_failure(ctx: PipelineContext, error_message: str, started_at: float) -> PipelineContext:
@@ -116,6 +127,39 @@ def run_pipeline(file_path: str) -> ProcessingStatus:
     return run_pipeline_context(file_path).status
 
 
+def run_pipeline_batch(input_path: str, recursive: bool = True) -> list[PipelineContext]:
+    root = Path(input_path).resolve()
+    if not root.is_dir():
+        raise ValueError(f"Batch input must be a directory: {root}")
+
+    files = _collect_supported_files(root) if recursive else [
+        path for path in sorted(root.iterdir()) if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+    ]
+
+    if not files:
+        raise ValueError(f"No supported documents found in {root}")
+
+    console.print("[bold cyan]Batch Mode[/bold cyan]")
+    console.print(f"[dim]Folder: {root}[/dim]")
+    console.print(f"[dim]Files: {len(files)}[/dim]")
+    console.print("=" * 80)
+
+    contexts: list[PipelineContext] = []
+    for index, file_path in enumerate(files, start=1):
+        console.print(f"[bold]Batch item {index}/{len(files)}[/bold]: {file_path.name}")
+        contexts.append(run_pipeline_context(str(file_path)))
+        console.print("-" * 80)
+
+    processed = sum(1 for ctx in contexts if ctx.status == ProcessingStatus.PROCESSED)
+    pending = sum(1 for ctx in contexts if ctx.status == ProcessingStatus.PENDING_REVIEW)
+    failed = sum(1 for ctx in contexts if ctx.status == ProcessingStatus.FAILED)
+    console.print(
+        f"[bold]Batch summary:[/bold] processed={processed} pending={pending} failed={failed}"
+    )
+    console.print("=" * 80)
+    return contexts
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         console.print("[red]Usage: python pipeline.py <file_path>[/red]")
@@ -131,6 +175,11 @@ if __name__ == "__main__":
     if not Path(input_file).exists():
         console.print(f"[red]File not found: {input_file}[/red]")
         sys.exit(1)
+
+    target = Path(input_file)
+    if target.is_dir():
+        contexts = run_pipeline_batch(str(target))
+        sys.exit(0 if all(ctx.status != ProcessingStatus.FAILED for ctx in contexts) else 1)
 
     status = run_pipeline(input_file)
     sys.exit(0 if status != ProcessingStatus.FAILED else 1)
